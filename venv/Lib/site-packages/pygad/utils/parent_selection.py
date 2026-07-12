@@ -1,0 +1,847 @@
+"""
+The pygad.utils.parent_selection module has all the built-in parent selection operators.
+"""
+
+import numpy
+
+class ParentSelection:
+
+    def __init__():
+        pass
+
+    def steady_state_selection(self, fitness, num_parents):
+        """
+        Select the parents using the steady-state selection technique. The
+        solutions are sorted by fitness and the top ``num_parents`` are
+        chosen. Works for both single-objective and multi-objective
+        problems because the sort is delegated to ``sort_solutions_nsga2``.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+
+        # Return the indices of the sorted solutions (all solutions in the population).
+        # This function works with both single- and multi-objective optimization problems.
+        fitness_sorted = self.sort_solutions_nsga2(fitness=fitness)
+
+        # Selecting the best individuals in the current generation as parents for producing the offspring of the next generation.
+        parents = self.initialize_parents_array((num_parents, self.population.shape[1]))
+        parents_indices = numpy.array(fitness_sorted[:num_parents])
+        parents[:, :] = self.population[parents_indices, :].copy()
+
+        return parents, parents_indices
+
+    def rank_selection(self, fitness, num_parents):
+        """
+        Select the parents using the rank selection technique. Solutions
+        are first sorted by fitness; rank 1 is given to the worst and
+        rank N to the best. The chance of being picked is proportional to
+        the rank.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+
+        # Return the indices of the sorted solutions (all solutions in the population).
+        # This function works with both single- and multi-objective optimization problems.
+        fitness_sorted = self.sort_solutions_nsga2(fitness=fitness)
+
+        # Rank the solutions based on their fitness. The worst is given rank 1. The best is given rank N.
+        rank = numpy.arange(1, self.sol_per_pop+1)
+
+        probs = rank / numpy.sum(rank)
+
+        probs_start, probs_end, parents = self.wheel_cumulative_probs(probs=probs.copy(),
+                                                                      num_parents=num_parents)
+
+        parents_indices = []
+
+        for parent_num in range(num_parents):
+            rand_prob = numpy.random.rand()
+            for idx in range(probs.shape[0]):
+                if (rand_prob >= probs_start[idx] and rand_prob < probs_end[idx]):
+                    # The variable idx holds the rank of the solution, not its index in the population.
+                    # Return the correct index of the solution.
+                    mapped_idx = fitness_sorted[idx]
+                    parents[parent_num, :] = self.population[mapped_idx, :].copy()
+                    parents_indices.append(mapped_idx)
+                    break
+
+        return parents, numpy.array(parents_indices)
+
+    def random_selection(self, fitness, num_parents):
+        """
+        Select the parents at random from the current population.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+            Not used by this method but kept for a uniform interface.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+
+        parents = self.initialize_parents_array((num_parents, self.population.shape[1]))
+        rand_indices = numpy.random.randint(low=0.0, high=fitness.shape[0], size=num_parents)
+        parents[:, :] = self.population[rand_indices, :].copy()
+
+        return parents, rand_indices
+
+    def tournament_selection(self, fitness, num_parents):
+        """
+        Select the parents using the tournament selection technique. For
+        each parent slot, ``self.K_tournament`` candidates are picked at
+        random; the one with the best fitness rank wins.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+
+        # Return the indices of the sorted solutions (all solutions in the population).
+        # This function works with both single- and multi-objective optimization problems.
+        fitness_sorted = self.sort_solutions_nsga2(fitness=fitness)
+
+        parents = self.initialize_parents_array((num_parents, self.population.shape[1]))
+        parents_indices = []
+
+        rank_lookup = {sol_idx: rank for rank, sol_idx in enumerate(fitness_sorted)}
+
+        for parent_num in range(num_parents):
+            # Generate random indices for the candidate solutions.
+            rand_indices = numpy.random.randint(low=0, high=len(fitness), size=self.K_tournament)
+
+            # Find the rank of the candidate solutions. The lower the rank, the better the solution.
+            rand_indices_rank = [rank_lookup[rand_idx] for rand_idx in rand_indices]
+            # Select the solution with the lowest rank as a parent.
+            selected_parent_idx = rand_indices_rank.index(min(rand_indices_rank))
+
+            # Append the index of the selected parent.
+            parents_indices.append(rand_indices[selected_parent_idx])
+
+        parents_indices = numpy.array(parents_indices)
+        parents[:, :] = self.population[parents_indices, :].copy()
+
+        return parents, parents_indices
+
+    def roulette_wheel_selection(self, fitness, num_parents):
+        """
+        Select the parents using the roulette wheel selection technique.
+        Each solution gets a slice of the wheel proportional to its
+        fitness. A random pointer is drawn for every parent slot.
+
+        For multi-objective problems, the fitness rows are summed across
+        objectives so the wheel works on a single scalar per solution.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+
+        Raises
+        ------
+        ZeroDivisionError
+            If the sum of fitness values is zero.
+        """
+
+        ## Make edits to work with multi-objective optimization.
+        ## The objective is to convert the fitness from M-D array to just 1D array.
+        ## There are 2 ways:
+            # 1) By summing the fitness values of each solution.
+            # 2) By using only 1 objective to create the roulette wheel and excluding the others.
+
+        # Take the sum of the fitness values of each solution.
+        if len(fitness.shape) > 1:
+            # Multi-objective optimization problem.
+            # Sum the fitness values of each solution to reduce the fitness from M-D array to just 1D array.
+            fitness = numpy.sum(fitness, axis=1)
+        else:
+            # Single-objective optimization problem.
+            pass
+
+        # Reaching this step confirms that fitness is a 1D array.
+        fitness_sum = numpy.sum(fitness)
+        if fitness_sum == 0:
+            self.logger.error("Cannot proceed because the sum of fitness values is zero. Cannot divide by zero.")
+            raise ZeroDivisionError("Cannot proceed because the sum of fitness values is zero. Cannot divide by zero.")
+
+        probs = fitness / fitness_sum
+
+        probs_start, probs_end, parents = self.wheel_cumulative_probs(probs=probs.copy(),
+                                                                      num_parents=num_parents)
+
+        parents_indices = []
+
+        for parent_num in range(num_parents):
+            rand_prob = numpy.random.rand()
+            for idx in range(probs.shape[0]):
+                if (rand_prob >= probs_start[idx] and rand_prob < probs_end[idx]):
+                    parents_indices.append(idx)
+                    break
+
+        parents_indices = numpy.array(parents_indices)
+        parents[:, :] = self.population[parents_indices, :].copy()
+
+        return parents, parents_indices
+
+    def wheel_cumulative_probs(self, probs, num_parents):
+        """
+        Build the cumulative probability ranges used by the roulette
+        wheel and rank selection methods. Each solution gets a
+        ``[start, end)`` interval whose width is its selection
+        probability.
+
+        Parameters
+        ----------
+        probs : numpy.ndarray
+            A 1D array of selection probabilities, one per solution.
+        num_parents : int
+            Number of parents to pick later. Only used to allocate the
+            empty parents array returned to the caller.
+
+        Returns
+        -------
+        probs_start : numpy.ndarray
+            Start of each cumulative range, indexed by solution.
+        probs_end : numpy.ndarray
+            End of each cumulative range, indexed by solution.
+        parents : numpy.ndarray
+            An empty parents array with the right shape and dtype,
+            ready to be filled by the caller.
+        """
+
+        probs_start = numpy.zeros(probs.shape, dtype=float) # An array holding the start values of the ranges of probabilities.
+        probs_end = numpy.zeros(probs.shape, dtype=float) # An array holding the end values of the ranges of probabilities.
+
+        sorted_indices = numpy.argsort(probs)
+        cumulative = numpy.cumsum(probs[sorted_indices])
+        probs_start[sorted_indices] = numpy.concatenate([[0.0], cumulative[:-1]])
+        probs_end[sorted_indices] = cumulative
+
+        # Selecting the best individuals in the current generation as parents for producing the offspring of the next generation.
+        parents = self.initialize_parents_array((num_parents, self.population.shape[1]))
+
+        return probs_start, probs_end, parents
+
+    def stochastic_universal_selection(self, fitness, num_parents):
+        """
+        Select the parents using the stochastic universal selection
+        technique. Like roulette wheel but uses a set of evenly spaced
+        pointers drawn from a single random offset, giving a more
+        balanced sampling than independent random pointers.
+
+        For multi-objective problems, the fitness rows are summed across
+        objectives so the wheel works on a single scalar per solution.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+
+        Raises
+        ------
+        ZeroDivisionError
+            If the sum of fitness values is zero.
+        """
+
+        ## Make edits to work with multi-objective optimization.
+        ## The objective is to convert the fitness from M-D array to just 1D array.
+        ## There are 2 ways:
+            # 1) By summing the fitness values of each solution.
+            # 2) By using only 1 objective to create the roulette wheel and excluding the others.
+
+        # Take the sum of the fitness values of each solution.
+        if len(fitness.shape) > 1:
+            # Multi-objective optimization problem.
+            # Sum the fitness values of each solution to reduce the fitness from M-D array to just 1D array.
+            fitness = numpy.sum(fitness, axis=1)
+        else:
+            # Single-objective optimization problem.
+            pass
+
+        # Reaching this step confirms that fitness is a 1D array.
+        fitness_sum = numpy.sum(fitness)
+        if fitness_sum == 0:
+            self.logger.error("Cannot proceed because the sum of fitness values is zero. Cannot divide by zero.")
+            raise ZeroDivisionError("Cannot proceed because the sum of fitness values is zero. Cannot divide by zero.")
+
+        probs = fitness / fitness_sum
+
+        probs_start, probs_end, parents = self.wheel_cumulative_probs(probs=probs.copy(),
+                                                                      num_parents=num_parents)
+
+        pointers_distance = 1.0 / self.num_parents_mating # Distance between different pointers.
+        first_pointer = numpy.random.uniform(low=0.0,
+                                             high=pointers_distance,
+                                             size=1)[0] # Location of the first pointer.
+
+        # Selecting the best individuals in the current generation as parents for producing the offspring of the next generation.
+        parents = self.initialize_parents_array((num_parents, self.population.shape[1]))
+
+        parents_indices = []
+
+        for parent_num in range(num_parents):
+            rand_pointer = first_pointer + parent_num*pointers_distance
+            for idx in range(probs.shape[0]):
+                if (rand_pointer >= probs_start[idx] and rand_pointer < probs_end[idx]):
+                    parents_indices.append(idx)
+                    break
+
+        parents_indices = numpy.array(parents_indices)
+        parents[:, :] = self.population[parents_indices, :].copy()
+
+        return parents, parents_indices
+
+    def tournament_selection_nsga2(self,
+                                   fitness,
+                                   num_parents):
+        """
+        Select the parents using the tournament selection variant for
+        NSGA-II. For each parent slot, ``self.K_tournament`` candidates
+        are picked at random. The winner is decided as follows:
+
+        1. If the candidates lie in different Pareto fronts, the one in
+           the front with the lowest index wins.
+        2. If two or more share the same best front, the one with the
+           higher crowding distance wins.
+        3. If they also share the same crowding distance, the winner is
+           picked at random.
+
+        Only works for multi-objective problems.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+            Each row must be an iterable of objective values.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+
+        Raises
+        ------
+        ValueError
+            If the fitness function returned scalar values (the problem
+            is single-objective).
+        """
+
+        if self.gene_type_single == True:
+            parents = numpy.empty((num_parents, self.population.shape[1]), dtype=self.gene_type[0])
+        else:
+            parents = numpy.empty((num_parents, self.population.shape[1]), dtype=object)
+
+        # Verify that the problem is multi-objective optimization as the tournament NSGA-II selection is only applied to multi-objective problems.
+        if type(fitness[0]) in [list, tuple, numpy.ndarray]:
+            pass
+        elif type(fitness[0]) in self.supported_int_float_types:
+            raise ValueError('The tournament NSGA-II parent selection operator is only applied when optimizing multi-objective problems.\n\nBut a single-objective optimization problem found as the fitness function returns a single numeric value.\n\nTo use multi-objective optimization, consider returning an iterable of any of these data types:\n1)list\n2)tuple\n3)numpy.ndarray')
+
+        # The indices of the selected parents.
+        parents_indices = []
+
+        # If there is only a single objective, each pareto front is expected to have only 1 solution.
+        # TODO Make a test to check for that behavior and add it to the GitHub actions tests.
+        pareto_fronts, solutions_fronts_indices = self.non_dominated_sorting(fitness)
+        self.pareto_fronts = pareto_fronts.copy()
+
+        # Randomly generate pairs of indices to apply for NSGA-II tournament selection for selecting the parents solutions.
+        rand_indices = numpy.random.randint(low=0,
+                                            high=len(solutions_fronts_indices),
+                                            size=(num_parents, self.K_tournament))
+
+        for parent_num in range(num_parents):
+            # Return the indices of the current 2 solutions.
+            current_indices = rand_indices[parent_num]
+            # Return the front index of the 2 solutions.
+            parent_fronts_indices = solutions_fronts_indices[current_indices]
+            parent_fronts_indices_unique = numpy.unique(parent_fronts_indices)
+
+            # Here are the possible cases:
+            # 1) All the solutions are in the same front (e.g. [0, 0, 0, 0]). Select a solution randomly.
+            # 2) Each solution is in a different front but there is only one solution in the pareto front with the lowest index (e.g. [0, 1, 2, 3]). Use the solution in the best front (lower front index).
+            # 3) The solutions are split into groups in different pareto fronts and there are more than one solution in the pareto front with the lowest index (e.g. [0, 0, 1, 1]). Filter the solutions in the lowest rank pareto front and randomly select a solution from this filtered list.
+
+            # If no single solution found, then store the unique solutions indices.
+            current_indices_unique = None
+            # If a single solution found, store its index here.
+            selected_parent_index = None
+            # The pareto front where the filtered solutions exists.
+            selected_pareto_front_index = None
+            if len(parent_fronts_indices_unique) == 1:
+                # CASE 1
+                # There are multiple solutions at the same front.
+                # Use crowding distance to select a solution.
+                selected_pareto_front_index = parent_fronts_indices_unique[0]
+                current_indices_unique = numpy.unique(current_indices[parent_fronts_indices == selected_pareto_front_index])
+            else:
+                best_pareto_front = min(parent_fronts_indices_unique)
+                best_pareto_front_count = list(parent_fronts_indices).count(best_pareto_front)
+                if best_pareto_front_count == 1:
+                    # CASE 2
+                    #### DONE
+                    # Use the single solution at the best pareto front directly as parent.
+                    selected_parent_index = current_indices[parent_fronts_indices == best_pareto_front][0]
+                else:
+                    # CASE 3
+                    current_indices_unique = numpy.unique(current_indices[parent_fronts_indices == best_pareto_front])
+                    if len(current_indices_unique) == 1:
+                        #### DONE
+                        # There is only one solution in the best pareto front. Just select it as a parent.
+                        # The same solution index was randomly generated more than once using the numpy.random.randint()
+                        selected_parent_index = current_indices_unique[0]
+                    else:
+                        # There are different solutions at the same front.
+                        # Use crowding distance to select a solution.
+                        selected_pareto_front_index = best_pareto_front
+
+            if selected_parent_index is not None:
+                pass
+            else:
+                # Use crowding distance to select between 1 or more solutions within the same pareto front.
+                # The selection is made using the crowding distance.
+                # If more than 1 solution has the same crowding distance, select a solution randomly.
+
+                # Fetch the current pareto front.
+                pareto_front = pareto_fronts[selected_pareto_front_index]
+
+                # If there is only 1 solution in the pareto front, just return it without calculating the crowding distance (it is useless).
+                if pareto_front.shape[0] == 1:
+                    selected_parent_index = current_indices[0] # Index 1 can also be used.
+                else:
+                    # Reaching here means the selected pareto front has more than 1 solution.
+                    # Calculate the crowding distance of the solutions of the pareto front.
+                    obj_crowding_distance_list, crowding_distance_sum, crowding_dist_front_sorted_indices, crowding_dist_pop_sorted_indices = self.crowding_distance(pareto_front=pareto_front.copy(),
+                                                                                                                                                                     fitness=fitness)
+                    # This list has the sorted population-based indices for the solutions in the current pareto front.
+                    crowding_dist_pop_sorted_indices = list(crowding_dist_pop_sorted_indices)
+
+                    # Return the indices of the solutions from the pareto front based on the crowding distance.
+                    # If there is more than one solution, select the solution that has a better crowding distance.
+                    # This solution comes first in the order in the crowding_dist_pop_sorted_indices list.
+                    solutions_indices = [crowding_dist_pop_sorted_indices.index(rand_sol_idx) for rand_sol_idx in current_indices_unique]
+
+                    # Fetch the crowding distance using the indices.
+                    solutions_crowding_distance = [crowding_distance_sum[rand_sol_idx][1] for rand_sol_idx in solutions_indices]
+                    max_crowding_distance = max(solutions_crowding_distance)
+
+                    if solutions_crowding_distance.count(max_crowding_distance) == 1:
+                        # There is only a single solution with the maximum crowding distance. Just select it.
+                        selected_parent_index = current_indices_unique[solutions_crowding_distance.index(max_crowding_distance)]
+                    else:
+                        # If the crowding distance is equal across multiple solutions, select a solution randomly as a parent.
+                        selected_parent_index = numpy.random.choice(current_indices_unique)
+
+            # Insert the selected parent index.
+            parents_indices.append(selected_parent_index)
+            # Insert the selected parent.
+            parents[parent_num, :] = self.population[selected_parent_index, :].copy()
+
+        # Make sure the parents indices is returned as a NumPy array.
+        return parents, numpy.array(parents_indices)
+
+    def nsga2_selection(self,
+                        fitness,
+                        num_parents
+                        ):
+        """
+        Select the parents using the Non-Dominated Sorting Genetic
+        Algorithm II (NSGA-II). The population is sorted into Pareto
+        fronts; whole fronts are taken in order until the next one would
+        overflow the requested parent count. The remaining slots are
+        filled from that critical front by crowding distance (higher
+        crowding distance wins; random pick on ties).
+
+        Only works for multi-objective problems.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values of the solutions in the current population.
+            Each row must be an iterable of objective values.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+
+        Raises
+        ------
+        ValueError
+            If the fitness function returned scalar values (the problem
+            is single-objective).
+        """
+
+        if self.gene_type_single == True:
+            parents = numpy.empty((num_parents, self.population.shape[1]), dtype=self.gene_type[0])
+        else:
+            parents = numpy.empty((num_parents, self.population.shape[1]), dtype=object)
+
+        # Verify that the problem is multi-objective optimization as the NSGA-II selection is only applied to multi-objective problems.
+        if type(fitness[0]) in [list, tuple, numpy.ndarray]:
+            pass
+        elif type(fitness[0]) in self.supported_int_float_types:
+            raise ValueError('The NSGA-II parent selection operator is only applied when optimizing multi-objective problems.\n\nBut a single-objective optimization problem found as the fitness function returns a single numeric value.\n\nTo use multi-objective optimization, consider returning an iterable of any of these data types:\n1)list\n2)tuple\n3)numpy.ndarray')
+
+        # The indices of the selected parents.
+        parents_indices = []
+
+        # If there is only a single objective, each pareto front is expected to have only 1 solution.
+        # TODO Make a test to check for that behavior.
+        pareto_fronts, solutions_fronts_indices = self.non_dominated_sorting(fitness)
+        self.pareto_fronts = pareto_fronts.copy()
+
+        # The number of remaining parents to be selected.
+        num_remaining_parents = num_parents
+
+        # Index of the current parent.
+        current_parent_idx = 0
+        # A loop variable holding the index of the current pareto front.
+        pareto_front_idx = 0
+        while num_remaining_parents != 0 and pareto_front_idx < len(pareto_fronts):
+            # Return the current pareto front.
+            current_pareto_front = pareto_fronts[pareto_front_idx]
+            # Check if the entire front fits into the parents array.
+            # If so, then insert all the solutions in the current front into the parents array.
+            if num_remaining_parents >= len(current_pareto_front):
+                for sol_idx in range(len(current_pareto_front)):
+                    selected_solution_idx = current_pareto_front[sol_idx, 0]
+                    # Insert the parent into the parents array.
+                    parents[current_parent_idx, :] = self.population[selected_solution_idx, :].copy()
+                    # Insert the index of the selected parent.
+                    parents_indices.append(selected_solution_idx)
+                    # Increase the parent index.
+                    current_parent_idx += 1
+
+                # Decrement the number of remaining parents by the length of the pareto front.
+                num_remaining_parents -= len(current_pareto_front)
+            else:
+                # If only a subset of the front is needed, then use the crowding distance to sort the solutions and select only the number needed.
+
+                # Calculate the crowding distance of the solutions of the pareto front.
+                obj_crowding_distance_list, crowding_distance_sum, crowding_dist_front_sorted_indices, crowding_dist_pop_sorted_indices = self.crowding_distance(pareto_front=current_pareto_front.copy(),
+                                                                                                                                                                 fitness=fitness)
+
+                for selected_solution_idx in crowding_dist_pop_sorted_indices[0:num_remaining_parents]:
+                    # Insert the parent into the parents array.
+                    parents[current_parent_idx, :] = self.population[selected_solution_idx, :].copy()
+                    # Insert the index of the selected parent.
+                    parents_indices.append(selected_solution_idx)
+                    # Increase the parent index.
+                    current_parent_idx += 1
+
+                # Decrement the number of remaining parents by the number of selected parents.
+                num_remaining_parents -= num_remaining_parents
+
+            # Increase the pareto front index to take parents from the next front.
+            pareto_front_idx += 1
+
+        # Make sure the parents indices is returned as a NumPy array.
+        return parents, numpy.array(parents_indices)
+
+    def nsga3_selection(self, fitness, num_parents):
+        """
+        Select ``num_parents`` parents from the current population using
+        NSGA-III. Solutions are first sorted into Pareto fronts. Whole
+        fronts are accepted in order until the next front would overflow
+        the requested parent count; that front becomes the critical
+        front. Survivors from the critical front are picked by niching
+        against the structured reference points stored on the GA
+        instance.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values for the entire population. Must be
+            multi-objective (each row is a vector of M values).
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions copied from ``self.population``.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+        _nsga3_validate_multi_objective_fitness(
+            fitness, self.supported_int_float_types, 'nsga3_selection')
+        pareto_fronts, _ = self.non_dominated_sorting(fitness)
+        self.pareto_fronts = pareto_fronts.copy()
+
+        accepted_indices, critical_front_indices = _nsga3_accumulate_fronts(
+            pareto_fronts, num_parents)
+        if critical_front_indices:
+            picked = self._nsga3_pick_critical_front_survivors(
+                accepted_indices,
+                critical_front_indices,
+                fitness,
+                num_parents - len(accepted_indices))
+            final_indices = accepted_indices + picked
+        else:
+            # The accepted fronts already fit exactly; no niching needed.
+            final_indices = accepted_indices
+
+        return self._nsga3_build_parents(final_indices, num_parents)
+
+    def _nsga3_pick_critical_front_survivors(self,
+                                             accepted_indices,
+                                             critical_front_indices,
+                                             fitness,
+                                             num_to_select):
+        """
+        Run the NSGA-III normalization and niching steps on the
+        candidate pool described below, then ask
+        ``nsga3_niching_select`` for ``num_to_select`` survivors from
+        the critical front.
+
+        The candidate pool is the union of two sets:
+          1. The already-accepted solutions (``accepted_indices``).
+             These are the solutions taken from earlier, fully-fitting
+             Pareto fronts.
+          2. The critical-front candidates (``critical_front_indices``).
+             These are every solution in the first Pareto front that
+             would not fit entirely into the parent quota.
+
+        Working on the union (and not just the survivors) is what the
+        NSGA-III paper requires: the ideal point, extreme points,
+        intercepts and normalized values must be computed on this
+        combined pool so the geometry stays stable as the niching loop
+        accepts or rejects critical-front members.
+        """
+        selection_pool_indices = accepted_indices + critical_front_indices
+        selection_pool_fitness = numpy.array(
+            [fitness[i] for i in selection_pool_indices], dtype=float)
+        ideal_point = self.nsga3_compute_ideal_point(selection_pool_fitness)
+        extremes = self.nsga3_find_extreme_points(selection_pool_fitness,
+                                                  ideal_point)
+        intercepts = self.nsga3_compute_intercepts(extremes,
+                                                   ideal_point,
+                                                   selection_pool_fitness)
+        normalized = self.nsga3_normalize_fitness(selection_pool_fitness,
+                                                  ideal_point,
+                                                  intercepts)
+        associations, distances = self.nsga3_associate_to_reference_points(
+            normalized, self.nsga3_reference_points)
+        # The first len(accepted_indices) rows of the pool belong to the
+        # accepted set; the rest are the critical-front candidates.
+        split = len(accepted_indices)
+        return self.nsga3_niching_select(
+            critical_front_indices=critical_front_indices,
+            critical_front_associations=associations[split:],
+            critical_front_distances=distances[split:],
+            accepted_associations=associations[:split],
+            num_reference_points=len(self.nsga3_reference_points),
+            num_to_select=num_to_select,
+        )
+
+    def _nsga3_build_parents(self, final_indices, num_parents):
+        """
+        Copy the chosen solutions out of ``self.population`` into a new
+        parents array of the right dtype, and return it together with
+        the index array.
+        """
+        parents = self.initialize_parents_array(
+            (num_parents, self.population.shape[1]))
+        for slot, idx in enumerate(final_indices):
+            parents[slot, :] = self.population[idx, :].copy()
+        return parents, numpy.array(final_indices)
+
+    def tournament_selection_nsga3(self, fitness, num_parents):
+        """
+        Select ``num_parents`` parents using K-tournament where the
+        within-front comparison is based on NSGA-III niching.
+
+        The full population is sorted into Pareto fronts and normalized
+        once at the start. For each parent slot:
+          1. Pick ``self.K_tournament`` solutions at random.
+          2. Keep only the ones in the best (lowest) Pareto front.
+          3. If more than one is left, the winner is the solution whose
+             reference point has the smallest niche count. Ties on niche
+             count go to the smaller perpendicular distance.
+
+        Parameters
+        ----------
+        fitness : numpy.ndarray
+            Fitness values for the entire population. Must be
+            multi-objective.
+        num_parents : int
+            Number of parents to select.
+
+        Returns
+        -------
+        parents : numpy.ndarray
+            Selected parent solutions.
+        parents_indices : numpy.ndarray
+            Indices of the selected parents inside ``self.population``.
+        """
+        _nsga3_validate_multi_objective_fitness(
+            fitness, self.supported_int_float_types,
+            'tournament_selection_nsga3')
+        pareto_fronts, solutions_fronts_indices = self.non_dominated_sorting(fitness)
+        self.pareto_fronts = pareto_fronts.copy()
+
+        # Convert the fitness rows to a clean 2D float array.
+        fitness_matrix = numpy.array([list(row) for row in fitness], dtype=float)
+        ideal_point = self.nsga3_compute_ideal_point(fitness_matrix)
+        extremes = self.nsga3_find_extreme_points(fitness_matrix, ideal_point)
+        intercepts = self.nsga3_compute_intercepts(extremes,
+                                                   ideal_point,
+                                                   fitness_matrix)
+        normalized = self.nsga3_normalize_fitness(fitness_matrix,
+                                                  ideal_point,
+                                                  intercepts)
+        associations, distances = self.nsga3_associate_to_reference_points(
+            normalized, self.nsga3_reference_points)
+        # Niche count is the number of population solutions attached to
+        # each reference point.
+        niche_counts = numpy.bincount(associations,
+                                      minlength=len(self.nsga3_reference_points))
+
+        rand_indices = numpy.random.randint(low=0,
+                                            high=len(solutions_fronts_indices),
+                                            size=(num_parents, self.K_tournament))
+        parents_indices = [self._nsga3_pick_tournament_winner(rand_indices[slot],
+                                                              solutions_fronts_indices,
+                                                              associations,
+                                                              distances,
+                                                              niche_counts)
+                           for slot in range(num_parents)]
+        return self._nsga3_build_parents(parents_indices, num_parents)
+
+    def _nsga3_pick_tournament_winner(self,
+                                      competitor_indices,
+                                      fronts_indices,
+                                      associations,
+                                      distances,
+                                      niche_counts):
+        """
+        Pick the best solution among the K-tournament competitors. The
+        best front index wins first; ties are broken by lower niche
+        count, then by smaller perpendicular distance.
+        """
+        best_front = fronts_indices[competitor_indices].min()
+        finalists = competitor_indices[
+            fronts_indices[competitor_indices] == best_front]
+        if len(finalists) == 1:
+            return int(finalists[0])
+        finalist_niche_counts = niche_counts[associations[finalists]]
+        finalist_distances = distances[finalists]
+        # lexsort sorts by the last key first, so this orders by niche
+        # count first and breaks ties by distance.
+        ordering = numpy.lexsort((finalist_distances, finalist_niche_counts))
+        return int(finalists[ordering[0]])
+
+
+def _nsga3_validate_multi_objective_fitness(fitness,
+                                            supported_int_float_types,
+                                            method_name):
+    """
+    Raise an error if the first fitness value is a scalar (which means
+    the problem is single-objective and NSGA-III cannot be applied) or
+    if it is some other unsupported type.
+    """
+    if type(fitness[0]) in supported_int_float_types:
+        raise TypeError(
+            f"{method_name} requires a multi-objective fitness function "
+            f"(an iterable per solution), but the first fitness value "
+            f"({fitness[0]!r}) has scalar type {type(fitness[0]).__name__}."
+        )
+    if type(fitness[0]) not in (list, tuple, numpy.ndarray):
+        raise TypeError(
+            f"{method_name} expects each fitness value to be a list, tuple, "
+            f"or numpy.ndarray, but the first fitness value has type "
+            f"{type(fitness[0]).__name__}."
+        )
+
+
+def _nsga3_accumulate_fronts(pareto_fronts, num_parents):
+    """
+    Walk the Pareto fronts in order and add each whole front to the
+    accepted list while the running total stays at or below
+    ``num_parents``. The first front that would overflow becomes the
+    critical front.
+
+    Returns a pair (accepted_indices, critical_front_indices). When the
+    accepted set fits exactly into ``num_parents``,
+    ``critical_front_indices`` is empty.
+    """
+    accepted_indices = []
+    critical_front_indices = []
+    for front in pareto_fronts:
+        front_solution_indices = front[:, 0].astype(int).tolist()
+        if len(accepted_indices) + len(front_solution_indices) <= num_parents:
+            accepted_indices.extend(front_solution_indices)
+            if len(accepted_indices) == num_parents:
+                break
+        else:
+            critical_front_indices = front_solution_indices
+            break
+    return accepted_indices, critical_front_indices
