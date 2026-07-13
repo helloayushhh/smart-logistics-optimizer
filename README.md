@@ -41,6 +41,6 @@ Follow these steps to set up the project locally.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Jezabel-sh/logistics-optimizer.git
+git clone https://github.com/helloayushhh/smart-logistics-optimizer.git
 cd logistics-optimizer
 ```
