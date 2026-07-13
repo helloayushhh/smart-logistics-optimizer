@@ -42,5 +42,5 @@ Follow these steps to set up the project locally.
 
 ```bash
 git clone https://github.com/helloayushhh/smart-logistics-optimizer.git
-cd logistics-optimizer
+cd smart-logistics-optimizer
 ```
